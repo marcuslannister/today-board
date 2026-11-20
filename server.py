@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import datetime
 from html import escape
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 NOTES_FILE = os.environ.get("TODAY_NOTES_FILE", "~/org/notes.org")
@@ -29,10 +29,12 @@ MAX_ITEMS = 12
 MAX_CHARS = 80  # the whole text, including the "…" that marks a cut
 
 HEADING = re.compile(r"^(\*+)[ \t]+(.*?)[ \t]*$")
-TAGS = re.compile(r"[ \t]+:(?:[\w@#%]+:)+$")
+# A tag-only title (`** :work:`) has no whitespace before the tags: the heading pattern ate it.
+TAGS = re.compile(r"(?:^|[ \t]+):(?:[\w@#%]+:)+$")
 KEYWORD = re.compile(r"^(?:TODO|DONE|NEXT|WAITING|WAIT|CANCELLED|CANCELED)(?:[ \t]+|$)")
 PRIORITY = re.compile(r"^\[#(?:[A-Z]|\d+)\](?:[ \t]+|$)")
-LINK = re.compile(r"\[\[([^\]]*)\](?:\[([^\]]*)\])?\]")
+# Like Org, the description runs to the first "]]", so it may hold single brackets.
+LINK = re.compile(r"\[\[([^\]]*)\](?:\[(.*?)\])?\]")
 
 
 def clean_heading(title):
@@ -50,7 +52,8 @@ def parse_today(text):
     The section ends at the next level-1 heading. Level 3 and deeper, and body text, are ignored.
     """
     items, in_today = [], False
-    for line in text.splitlines():
+    # Not splitlines(): it also splits on U+2028 and form feed, which are not Org line ends.
+    for line in re.split(r"\r?\n", text):
         match = HEADING.match(line)
         if not match:
             continue
@@ -127,6 +130,8 @@ def render(items, now=None, kindle=False):
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 10  # seconds; a client that sends nothing must not hold its thread for ever
+
     def do_GET(self):
         path, _, query = self.path.partition("?")
         if path not in ("/", "/index.html"):
@@ -145,6 +150,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def make_server(host, port):
+    # Threaded: one idle connection (a browser pre-connect) must not block every other client.
+    return ThreadingHTTPServer((host, port), Handler)
+
+
 if __name__ == "__main__":
     print(f"today-board on http://{HOST}:{PORT}/ reading {NOTES_FILE}")
-    HTTPServer((HOST, PORT), Handler).serve_forever()
+    make_server(HOST, PORT).serve_forever()

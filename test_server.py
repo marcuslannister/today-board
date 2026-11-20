@@ -6,13 +6,13 @@ Run with: python3 -m unittest -v
 
 import io
 import os
+import socket
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime
-from http.server import HTTPServer
 from unittest import mock
 
 import server
@@ -70,9 +70,18 @@ class ParseToday(unittest.TestCase):
             ["Read the article now", "Open https://example.com/b", "one and two and https://c.example"],
         )
 
+    def test_link_description_with_brackets(self):
+        text = notes("* Today", "** [[id:book][Chapter [draft] now]] :x:", "** [[a][b [c]]] then [[d][e]]")
+        self.assertEqual(parse_today(text), ["Chapter [draft] now", "b [c] then e"])
+
     def test_tags(self):
-        text = notes("* Today", "** Call Sam :phone:", "** Plan :a:b@c:", "** a:b: not tags", "** :alone:")
-        self.assertEqual(parse_today(text), ["Call Sam", "Plan", "a:b: not tags", ":alone:"])
+        text = notes("* Today", "** Call Sam :phone:", "** Plan :a:b@c:", "** a:b: not tags")
+        self.assertEqual(parse_today(text), ["Call Sam", "Plan", "a:b: not tags"])
+
+    def test_tag_only_heading_is_skipped(self):
+        # Org gives these an empty title: they must not show their tags or use one of the 12 slots.
+        text = notes("* Today", "** :work:", "** TODO :work:home:", "** [#A] :x:", "** real")
+        self.assertEqual(parse_today(text), ["real"])
 
     def test_keywords_and_priority(self):
         text = notes(
@@ -120,6 +129,11 @@ class ParseToday(unittest.TestCase):
     def test_cut_counts_link_description_not_url(self):
         text = notes("* Today", "** [[https://example.com/" + "u" * 200 + "][short]]")
         self.assertEqual(parse_today(text), ["short"])
+
+    def test_unicode_separators_stay_inside_the_line(self):
+        # splitlines() would cut at U+2028, U+2029, and form feed and make "** ..." a heading.
+        text = notes("* Today", "** real", "Body\u2028** from U+2028", "Body\x0c** from FF", "Body\u2029** from U+2029")
+        self.assertEqual(parse_today(text), ["real"])
 
     def test_file_order_and_crlf(self):
         self.assertEqual(parse_today("* Today\r\n** b\r\n** a\r\n** c\r\n"), ["b", "a", "c"])
@@ -216,11 +230,12 @@ class Serve(unittest.TestCase):
         patch = mock.patch.object(server, "NOTES_FILE", self.path)
         patch.start()
         self.addCleanup(patch.stop)
-        httpd = HTTPServer(("127.0.0.1", 0), server.Handler)
+        httpd = server.make_server("127.0.0.1", 0)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.server_close)
         self.addCleanup(httpd.shutdown)
-        self.base = f"http://127.0.0.1:{httpd.server_port}"
+        self.host, self.port = "127.0.0.1", httpd.server_port
+        self.base = f"http://{self.host}:{self.port}"
 
     def get(self, url):
         with urllib.request.urlopen(self.base + url, timeout=5) as response:
@@ -247,6 +262,11 @@ class Serve(unittest.TestCase):
             handle.write(notes("* Today", "** a"))
         self.assertIn("setOrientation", self.get("/?k=1")[1])
         self.assertNotIn("setOrientation", self.get("/")[1])
+
+    def test_idle_connection_does_not_block_other_clients(self):
+        # A browser pre-connect: the socket is open and sends nothing.
+        with socket.create_connection((self.host, self.port), timeout=5):
+            self.assertEqual(self.get("/")[0], 200)
 
     def test_other_paths_are_404(self):
         for url in ("/other", "/index.htm", "/notes.org"):
