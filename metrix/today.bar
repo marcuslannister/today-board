@@ -1,0 +1,172 @@
+<bar protocol-version="0" id="today-board" title="Today" version="1.0.0" icon="checklist" description="The level-2 headings under * Today in an org file." homepage="https://github.com/marcuslannister/today-board" license="MIT" refresh="60s" widget="true">
+  <permissions>
+    <file path="{{ inputs.notes }}" />
+  </permissions>
+
+  <inputs>
+    <input name="notes" type="string" label="Org file" default="~/org/notes.org" />
+  </inputs>
+
+  <docs><![CDATA[Shows the level-2 headings under "* Today" in the org file. The same rules as server.py: links show their description, tags and TODO keywords are removed.]]></docs>
+
+  <script><![CDATA[
+  // parser-start: keep the same rules as parse_today() in server.py; test_server.py compares the two.
+  const MAX_CHARS = 80;
+  const HEADING = /^(\*+)[ \t]+(.*?)[ \t]*$/s; // s: "." must also match U+2028, as in Python
+  const TAGS = /(?:^|[ \t]+):(?:[\p{L}\p{N}_@#%]+:)+$/u;
+  const KEYWORD = /^(?:TODO|DONE|NEXT|WAITING|WAIT|CANCELLED|CANCELED)(?:[ \t]+|$)/;
+  const PRIORITY = /^\[#(?:[A-Z]|\d+)\](?:[ \t]+|$)/;
+  const LINK = /\[\[([^\]]*)\](?:\[(.*?)\])?\]/g;
+
+  function cleanHeading(title) {
+    title = title.trim().replace(KEYWORD, "").replace(PRIORITY, "");
+    title = title.replace(LINK, (_, url, desc) => desc || url).trim();
+    const chars = Array.from(title);
+    return chars.length > MAX_CHARS ? chars.slice(0, MAX_CHARS - 1).join("").trimEnd() + "…" : title;
+  }
+
+  function parseToday(text) {
+    const items = [];
+    let inToday = false;
+    for (const line of text.split(/\r?\n/)) {
+      const match = HEADING.exec(line);
+      if (!match) continue;
+      const level = match[1].length;
+      let title = match[2].replace(TAGS, "");
+      if (level === 1) {
+        if (inToday) break;
+        inToday = title === "Today";
+      } else if (level === 2 && inToday) {
+        title = cleanHeading(title);
+        if (title) items.push(title);
+      }
+    }
+    return items;
+  }
+  // parser-end
+
+  let items = null;
+  let error = "";
+  let updated = null;
+  let notesPath = "";
+  let loading = false;
+
+  // Same building blocks and theme tokens as the official dashboards.
+  const h = (type, props, ...children) =>
+    ({ type, props: props || {}, children: children.flat().filter((c) => c !== null && c !== undefined && c !== false) });
+  const TX = (text, props) => h("Text", props, String(text));
+  const K = { muted: "textMuted", hover: "surfaceHover", press: "surfacePressed" };
+  const W = 320;
+
+  const svg = (paths) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+    `stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  const ICON = {
+    mark: svg('<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>'),
+    circle: svg('<circle cx="12" cy="12" r="9"/>'),
+    done: svg('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
+    refresh: svg('<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>'),
+    alert: svg('<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>'),
+  };
+  const Icon = (name, size, color, extra) =>
+    h("Icon", { svg: ICON[name], fontSize: size || 14, width: size || 14, height: size || 14, textColor: color || K.muted, shrink: 0, ...extra });
+
+  async function load() {
+    try {
+      items = parseToday(await $metrix.readFile(notesPath));
+      error = "";
+    } catch (e) {
+      // A missing file is the normal "no list yet" case, so the panel shows "No Today list".
+      items = items || [];
+      error = `Cannot read ${notesPath}`;
+    }
+    updated = new Date();
+  }
+
+  function refresh() {
+    if (loading) return;
+    loading = true;
+    $metrix.invalidate();
+    load().finally(() => { loading = false; $metrix.invalidate(); });
+  }
+
+  function IconButton(name, label, onClick, busy) {
+    return h("Column", {
+      width: 28, height: 28, center: true, radius: 7, shrink: 0, label, tooltip: label, cursor: "pointer",
+      hover: { background: K.hover }, pressed: { background: K.press }, onClick,
+    }, Icon(name, 15, K.muted, busy ? { keyframes: { duration: 900, repeat: -1, ease: "linear",
+      frames: [{ at: 0, rotate: 0 }, { at: 1, rotate: 360 }] } } : null));
+  }
+
+  function Header() {
+    return h("Row", { gap: 8, padding: [12, 12, 4, 16], alignItems: "center", fillWidth: true },
+      Icon("mark", 18, "text"),
+      TX("Today", { fontSize: 14, fontWeight: 600, singleLine: true }),
+      items && items.length ? TX(items.length, { fontSize: 11, fontWeight: 600, textColor: "accentText", background: "accent",
+        radius: 4, padding: [1, 6] }) : null,
+      h("Spacer"),
+      IconButton("refresh", "Refresh", refresh, loading));
+  }
+
+  function Body() {
+    const time = updated ? updated.toTimeString().slice(0, 5) : "--:--";
+    return h("Column", { gap: 10, padding: [8, 16, 16, 16], fillWidth: true },
+      error ? h("Row", { gap: 8, padding: [8, 10], radius: 8, background: K.hover, alignItems: "center", fillWidth: true },
+        Icon("alert", 14, "danger"), TX(error, { fontSize: 12, grow: 1, shrink: 1, minWidth: 0, lineHeight: 1.3 })) : null,
+      items && items.length
+        ? h("Column", { gap: 2, fillWidth: true }, items.map((item, i) =>
+          h("Row", { key: `r${i}`, gap: 10, padding: [7, 8], radius: 6, alignItems: "start", fillWidth: true, hover: { background: K.hover } },
+            Icon("circle", 14, K.muted, { marginTop: 1 }),
+            TX(item, { grow: 1, shrink: 1, minWidth: 0, maxLines: 2, lineHeight: 1.3 }))))
+        : h("Column", { center: true, gap: 8, padding: [24, 28], fillWidth: true },
+          Icon("done", 28, K.muted),
+          TX(items ? "No Today list" : "Loading…", { fontSize: 14, fontWeight: 600, textAlign: "center" })),
+      TX(`Updated ${time}`, { fontSize: 11, textColor: K.muted, padding: [0, 8] }));
+  }
+
+  // The host sizes the panel from preferredHeight, not from its content, so estimate it (as the official dashboards do).
+  // shortcut: a row wraps when its text is wider than ~38 Latin characters (CJK counts 2); measured from check screenshots.
+  function panelHeight() {
+    const base = 90 + (error ? 44 : 0);
+    if (!items || !items.length) return base + 100;
+    const wide = (s) => Array.from(s).reduce((n, c) => n + (c.codePointAt(0) > 0x2e7f ? 2 : 1), 0);
+    return Math.min(560, base + items.reduce((sum, item) => sum + (wide(item) > 38 ? 50 : 33), 0));
+  }
+
+  // Widget: display components only (no tw, no callbacks); the system opens the panel window on click.
+  const WIDGET_ROWS = { small: 3, medium: 4, large: 10 };
+  function widgetSummary(family) {
+    const heading = h("Row", { gap: 6, alignItems: "center" },
+      h("Icon", { svg: ICON.mark, size: 14 }),
+      TX("Today", { fontSize: 13, fontWeight: 600, maxLines: 1 }), h("Spacer"),
+      items && items.length ? h("Badge", { text: String(items.length) }) : null);
+    if (!items || !items.length) return h("Column", { gap: 0 }, heading, h("Spacer"),
+      TX(items ? "No Today list" : "Loading…", { fontSize: 12, color: "secondary", textAlign: "center" }), h("Spacer"));
+    const shown = items.slice(0, WIDGET_ROWS[family]);
+    const more = items.length - shown.length;
+    return h("Column", { gap: family === "large" ? 8 : 6 }, heading,
+      shown.map((item) => h("Row", { gap: 6, alignItems: "center" },
+        h("Icon", { svg: ICON.circle, size: 10, color: "secondary" }),
+        TX(item, { fontSize: 12, maxLines: 1 }))),
+      more > 0 ? TX(`+${more} more`, { fontSize: 11, color: "secondary", maxLines: 1 }) : null,
+      h("Spacer"));
+  }
+
+  export default {
+    async scheduled(env) {
+      notesPath = env.inputs.notes;
+      await load();
+    },
+
+    render(env) {
+      return {
+        tray: { title: items ? String(items.length) : "", icon: "checklist", tooltip: "Today", error },
+        panel: h("Column", {
+          preferredWidth: W, preferredHeight: panelHeight(), fill: true, minHeight: 0, safeArea: true, fontSize: 13, textColor: "text",
+          shortcuts: { "CmdOrCtrl+R": refresh },
+        }, Header(), h("Scroll", { grow: 1, minHeight: 0, fillWidth: true }, Body())),
+        widget: { small: widgetSummary("small"), medium: widgetSummary("medium"), large: widgetSummary("large") },
+      };
+    },
+  };
+  ]]></script>
+</bar>

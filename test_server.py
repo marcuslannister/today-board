@@ -5,8 +5,11 @@ Run with: python3 -m unittest -v
 """
 
 import io
+import json
 import os
+import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -273,6 +276,31 @@ class Serve(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 self.get(url)
             self.assertEqual(caught.exception.code, 404)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class MetrixParity(unittest.TestCase):
+    """The Metrix.Bar dashboard has its own JavaScript copy of the parser; it must agree with parse_today()."""
+
+    CASES = [
+        notes("* Inbox", "** no", "* Today :work:", "** TODO [#A] Plain :read:", "*** deeper",
+              "body ** not a heading", "** [[https://a.example][Desc]]", "** [[https://b.example]]",
+              "** [[id:x][Chapter [draft] now]]", "** :tag:only:", "** DONE", "** 日本語 :读:",
+              "** " + "x" * 120, "* Later", "** no"),
+        "* Today\r\n** crlf one\r\n** two\u2028** not split\r\n",
+        notes("* TODO Today", "** no"),
+        "",
+    ]
+
+    def test_js_parser_matches_python(self):
+        with open(os.path.join(os.path.dirname(__file__), "metrix", "today.bar"), encoding="utf-8") as bar:
+            source = bar.read()
+        parser = source[source.index("// parser-start"):source.index("// parser-end")]
+        script = parser + "\nconst cases = JSON.parse(require('fs').readFileSync(0, 'utf8'));\n" \
+                          "process.stdout.write(JSON.stringify(cases.map(parseToday)));"
+        result = subprocess.run(["node", "-e", script], input=json.dumps(self.CASES),
+                                capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout), [parse_today(case) for case in self.CASES])
 
 
 if __name__ == "__main__":

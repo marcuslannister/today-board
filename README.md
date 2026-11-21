@@ -16,6 +16,10 @@ Open `http://localhost:8788/`.
 
 Find the IP address of the computer that runs the server. On the Kindle, open `http://<mac-ip>:8788/?k=1`. The `?k=1` page uses the scale and portrait mode that the Kindle browser needs.
 
+## Metrix.Bar
+
+`metrix/today.bar` shows the same list in the macOS menu bar with [Metrix.Bar](https://metrix.bar): the count in the menu bar, and the headings in the panel. It reads the org file directly every 60 s, so it does not need the server. In Metrix.Bar, use **Import .bar…**, and set the **Org file** input if your file is not `~/org/notes.org`. Its JavaScript parser follows the same rules as `server.py`, and a test compares the two (it needs `node`).
+
 ## Settings
 
 Set these as environment variables:
